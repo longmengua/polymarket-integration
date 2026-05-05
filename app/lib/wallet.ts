@@ -1,22 +1,11 @@
-import { ethers } from "ethers";
+import { createWalletClient, http } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
 
-/**
- * 建立 signer（用 private key）
- *
- * ⚠️ 生產環境請用：
- * - env
- * - KMS（AWS / GCP）
- */
-export function getSigner() {
-    const privateKey = process.env.PRIVATE_KEY!;
+const account = privateKeyToAccount(
+    "0x8b0400d02241bdd6e6e03dc44abce9aafbb1a343a9b742df21e5756bbc9a218d"
+);
 
-    if (!privateKey) {
-        throw new Error("Missing PRIVATE_KEY");
-    }
-
-    const provider = new ethers.JsonRpcProvider(
-        process.env.RPC_URL
-    );
-
-    return new ethers.Wallet(privateKey, provider);
-}
+export const signer = createWalletClient({
+    account,
+    transport: http("https://polygon-rpc.com"),
+});

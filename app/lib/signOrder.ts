@@ -1,38 +1,23 @@
-import { getSigner } from "./wallet";
+import { signer } from "./wallet";
+import { getDomain } from "./domain";
 
-/**
- * Polymarket Order Typed Data
- *
- * ⚠️ domain / types 需要對齊官方 spec
- */
-const domain = {
-    name: "Polymarket",
-    version: "1",
-    chainId: 137, // Polygon
-    verifyingContract: "0x0000000000000000000000000000000000000000", // ⚠️ 要換官方
-};
-
-const types = {
-    Order: [
-        { name: "market", type: "string" },
-        { name: "price", type: "uint256" },
-        { name: "size", type: "uint256" },
-        { name: "side", type: "string" },
-        { name: "nonce", type: "uint256" },
-    ],
-};
-
-/**
- * 簽名 order
- */
 export async function signOrder(order: any) {
-    const signer = getSigner();
+    const { domain, types } = await getDomain();
 
-    const signature = await signer.signTypedData(
+    const [address] = await signer.getAddresses();
+
+    const message = {
+        address,
+        timestamp: Math.floor(Date.now() / 1000),
+        nonce: order.nonce ?? 0,
+    };
+
+    const signature = await signer.signTypedData({
         domain,
         types,
-        order
-    );
+        primaryType: "SignMessage",
+        message,
+    });
 
-    return signature;
+    return { signature, address, message };
 }

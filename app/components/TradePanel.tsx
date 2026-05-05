@@ -1,96 +1,140 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { Market } from "../lib/polymarket/fetchEvent";
 
 export default function TradePanel({ market }: { market: Market }) {
-    const [price, setPrice] = useState("0.5");
-    const [size, setSize] = useState("10");
+    const [price, setPrice] = useState("");
+    const [size, setSize] = useState("1");
     const [logs, setLogs] = useState<any[]>([]);
-    const [outcomes, setOutcomes] = useState<{ name: string; price: string; ratio: number }[]>([]);
+    const [loading, setLoading] = useState(false);
 
-    useMemo(() => {
-        const outcomes = JSON.parse(market.outcomes);
-        const outcomePrices = JSON.parse(market.outcomePrices);
-        // 最高買價，你賣出參考
-        const bestBid = market.bestBid
-        // 最低賣價，你買入參考
-        const bestAsk = market.bestAsk
+    function safeParse(val: any) {
+        try {
+            return Array.isArray(val) ? val : JSON.parse(val || "[]");
+        } catch {
+            return [];
+        }
+    }
 
-        const combined = outcomes.map((o: string, i: number) => ({
+    const outcomes = useMemo(() => {
+        const outs = safeParse(market.outcomes);
+        const prices = safeParse(market.outcomePrices);
+        const tokenIds = safeParse(market.clobTokenIds);
+
+        return outs.map((o: string, i: number) => ({
             name: o,
-            price: i == 0 ? bestAsk.toString() : bestBid.toString(),
-            ratio: outcomePrices[i] * 100 + "%",
+            ratio: (Number(prices[i]) * 100).toFixed(1) + "%",
+            token_id: tokenIds?.[i],
         }));
+    }, [market]);
 
-        console.log("Combined outcomes and prices:", combined);
-        setOutcomes(combined);
-    }, [market.id]);
+    useEffect(() => {
+        if (market.bestAsk) {
+            setPrice(String(market.bestAsk));
+        }
+    }, [market.bestAsk]);
 
-    async function submit(side: "buy" | "sell") {
-        const res = await fetch("/api/trade", {
-            method: "POST",
-            body: JSON.stringify({
-                market,
-                side,
-                price: Number(price),
-                size: Number(size),
-            }),
-        });
+    async function submit(action: "BUY" | "SELL", token_id: string) {
+        if (!token_id || loading) return;
 
-        const data = await res.json();
-        setLogs((prev) => [data, ...prev]);
+        setLoading(true);
+
+        const refPrice =
+            price !== ""
+                ? Number(price)
+                : action === "BUY"
+                    ? Number(market.bestAsk)
+                    : Number(market.bestBid);
+
+        const payload = {
+            token_id,
+            side: action,
+            price: refPrice,
+            size: Number(size),
+        };
+
+        try {
+            // ✅ 改成走 Next API（避免 CORS + 403）
+            const res = await fetch("/api/trade", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify(payload),
+            });
+
+            const result = await res.json();
+
+            setLogs((prev) => [
+                {
+                    success: true,
+                    result,
+                    meta: payload,
+                },
+                ...prev,
+            ]);
+
+            setPrice(refPrice.toString());
+        } catch (err: any) {
+            setLogs((prev) => [
+                {
+                    success: false,
+                    error: err.message || String(err),
+                    meta: payload,
+                },
+                ...prev,
+            ]);
+        } finally {
+            setLoading(false);
+        }
     }
 
     return (
         <div className="p-4 border-l border-gray-800 h-full flex flex-col">
-            <h2 className="text-sm text-gray-400 mb-3">
-                Trade
-            </h2>
+            <h2 className="text-sm text-gray-400 mb-3">Trade</h2>
 
-            {/* Inputs */}
             <label className="text-xs text-gray-400 mb-1">價格</label>
             <input
                 className="mb-2 p-2 rounded bg-amber-50 text-black"
                 value={price}
                 onChange={(e) => setPrice(e.target.value)}
-                placeholder="Price"
             />
 
             <label className="text-xs text-gray-400 mb-1">數量</label>
             <input
-                className="mb-3 p-2 rounded  bg-amber-50 text-black"
+                className="mb-3 p-2 rounded bg-amber-50 text-black"
                 value={size}
                 onChange={(e) => setSize(e.target.value)}
-                placeholder="Size"
             />
 
-            <div className="flex justify-center items-center">
-                <label className="text-xs text-gray-400 mb-1 block">買賣價差：{market.spread}</label>
+            <div className="text-center text-xs text-gray-400 mb-2">
+                Spread: {market.spread}
             </div>
 
-            {/* Buttons */}
-            <div className="flex gap-2 mb-4 justify-around">
-                <div>
-                    <label className="text-xs text-gray-400 mb-1 block">買入參考價：{outcomes[0]?.price || "N/A"}</label>
-                    <button
-                        className="flex-1 bg-green-600 hover:bg-green-700 p-2 rounded"
-                        onClick={() => submit("buy")}
-                    >
-                        {outcomes[0]?.name} ({outcomes[0]?.ratio || "N/A"})
-                    </button>
-                </div>
+            <div className="flex gap-2 mb-4">
 
-                <div>
-                    <label className="text-xs text-gray-400 mb-1 block">賣出參考價：{outcomes[1]?.price || "N/A"}</label>
-                    <button
-                        className="flex-1 bg-red-600 hover:bg-red-700 p-2 rounded"
-                        onClick={() => submit("sell")}
-                    >
-                        {outcomes[1]?.name} ({outcomes[1]?.ratio || "N/A"})
-                    </button>
-                </div>
+                <button
+                    disabled={loading}
+                    className="flex-1 bg-green-600 hover:bg-green-700 p-2 rounded disabled:opacity-50"
+                    onClick={() =>
+                        submit("BUY", outcomes[0]?.token_id)
+                    }
+                >
+                    <div className="text-xs">{market.bestAsk}</div>
+                    BUY YES {outcomes[0]?.ratio}
+                </button>
+
+                <button
+                    disabled={loading}
+                    className="flex-1 bg-red-600 hover:bg-red-700 p-2 rounded disabled:opacity-50"
+                    onClick={() =>
+                        submit("SELL", outcomes[0]?.token_id)
+                    }
+                >
+                    <div className="text-xs">{market.bestBid}</div>
+                    SELL YES {outcomes[0]?.ratio}
+                </button>
             </div>
 
-            {/* Logs */}
             <div className="flex-1 overflow-auto text-xs bg-black p-2 rounded">
                 {logs.map((l, i) => (
                     <pre key={i}>{JSON.stringify(l, null, 2)}</pre>

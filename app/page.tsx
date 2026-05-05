@@ -59,10 +59,8 @@ export default function Page() {
         ))}
       </div>
 
-      <div className="flex-2 overflow-auto">
-        <h2 id="markets" className="text-sm text-gray-400 mt-4 mb-2">
-          Markets
-        </h2>
+      <div className="flex-2 border-r border-gray-800 p-3 overflow-auto">
+        <h2 className="text-sm text-gray-400 mb-2">Markets</h2>
 
         {markets.map((m, i) => (
           <div
