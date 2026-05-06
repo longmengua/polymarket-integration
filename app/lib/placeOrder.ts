@@ -1,55 +1,88 @@
 import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
+import { ethers } from "ethers";
 
-const API_KEY = "019dfcc9-934c-78a5-a360-37316bad7881";
-const API_SECRET = "Hq5sDwTTB1IAYSTNZfhc97c5SXNh6tN_5PDNWuaOv9A=";
-const API_PASSPHRASE = "27e761c7938a00ff185e3c0d17145497944bda1659f0ba8727dc8e2ce3bb05eb";
+// ⚠️ 這裡改成你的私鑰（一定要有資金）
+const PRIVATE_KEY = "你的private key";
 
-const BASE_URL = "https://relayer-api.polymarket.com";
+const RPC_URL = "https://polygon-rpc.com";
+const CLOB_URL = "https://clob.polymarket.com/orders";
 
-function signRequest(
-    method: string,
-    requestPath: string,
-    body: string,
-    timestamp: string
-) {
-    const prehash = `${timestamp}${method}${requestPath}${body}`;
+// ✅ EIP-712 domain
+const domain = {
+    name: "Polymarket CTF Exchange",
+    version: "1",
+    chainId: 137,
+    verifyingContract: "0x0000000000000000000000000000000000000000",
+};
 
-    return crypto
-        .createHmac("sha256", API_SECRET)
-        .update(prehash)
-        .digest("base64");
-}
+// ✅ order type
+const types = {
+    Order: [
+        { name: "salt", type: "uint256" },
+        { name: "maker", type: "address" },
+        { name: "signer", type: "address" },
+        { name: "taker", type: "address" },
+        { name: "tokenId", type: "uint256" },
+        { name: "makerAmount", type: "uint256" },
+        { name: "takerAmount", type: "uint256" },
+        { name: "expiration", type: "uint256" },
+    ],
+};
 
 export async function placeOrder(req: NextRequest) {
     try {
         const input = await req.json();
 
+        const provider = new ethers.JsonRpcProvider(RPC_URL);
+        const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
+
+        const maker = wallet.address;
+
+        // ⚠️ 這裡改：market → tokenId
+        const tokenId = BigInt(input.tokenId);
+
+        const price = input.price;
+        const size = input.size;
+        const side = input.side;
+
+        // ✅ 計算數量（USDC 6 decimals）
+        const makerAmount =
+            side === "BUY"
+                ? ethers.parseUnits(size.toString(), 6)
+                : ethers.parseUnits((price * size).toString(), 6);
+
+        const takerAmount =
+            side === "BUY"
+                ? ethers.parseUnits((price * size).toString(), 6)
+                : ethers.parseUnits(size.toString(), 6);
+
         const order = {
-            market: input.market,
-            price: input.price,
-            size: input.size,
-            side: input.side, // "BUY" | "SELL"
-            orderType: "GTC",
+            salt: BigInt(Date.now()),
+            maker,
+            signer: maker,
+            taker: ethers.ZeroAddress,
+            tokenId,
+            makerAmount,
+            takerAmount,
+            expiration: BigInt(Math.floor(Date.now() / 1000) + 3600),
         };
 
-        const requestPath = "/v1/orders";
-        const method = "POST";
-        const timestamp = Date.now().toString();
-        const bodyString = JSON.stringify(order);
+        // ✅ EIP-712 簽名（核心）
+        const signature = await wallet.signTypedData(domain, types, order);
 
-        const signature = signRequest(method, requestPath, bodyString, timestamp);
-
-        const res = await fetch(`${BASE_URL}${requestPath}`, {
-            method,
+        // ✅ 丟 CLOB（取代原本 relayer）
+        const res = await fetch(CLOB_URL, {
+            method: "POST",
             headers: {
                 "Content-Type": "application/json",
-                "PM-API-KEY": API_KEY,
-                "PM-API-SIGNATURE": signature,
-                "PM-API-TIMESTAMP": timestamp,
-                "PM-API-PASSPHRASE": API_PASSPHRASE,
             },
-            body: bodyString,
+            body: JSON.stringify({
+                order,
+                signature,
+                owner: maker,
+                orderType: "GTC",
+            }),
         });
 
         const data = await res.json();
