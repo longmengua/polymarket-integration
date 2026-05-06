@@ -9,3 +9,8 @@ export const signer = createWalletClient({
     account,
     transport: http("https://polygon-rpc.com"),
 });
+
+/**
+ * 👉 正確 export address（重點）
+ */
+export const address = account.address;
