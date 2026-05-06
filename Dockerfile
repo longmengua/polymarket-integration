@@ -1,5 +1,5 @@
 # 使用官方 Node image
-FROM node:18-alpine
+FROM node
 
 # 建立 app 目錄
 WORKDIR /app
