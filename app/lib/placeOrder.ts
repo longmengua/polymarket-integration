@@ -3,7 +3,7 @@ import crypto from "crypto";
 import { ethers } from "ethers";
 
 // ⚠️ 這裡改成你的私鑰（一定要有資金）
-const PRIVATE_KEY = "你的private key";
+const PRIVATE_KEY = "8b0400d02241bdd6e6e03dc44abce9aafbb1a343a9b742df21e5756bbc9a218d";
 
 const RPC_URL = "https://polygon-rpc.com";
 const CLOB_URL = "https://clob.polymarket.com/orders";
