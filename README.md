@@ -1,24 +1,28 @@
 # Polymarket CLOB Trading Server
 
-TypeScript + Fastify service for Polymarket CLOB trading operations. This server does not own market discovery or market metadata; upstream services should provide `tokenId`, `conditionId`, `negRisk`, and resolved-market signals.
+這是一個 TypeScript + Fastify 的 Polymarket CLOB 交易服務，負責下單、取消單、查詢訂單、監聽使用者訂單事件，以及在外部服務確認市場已結算後觸發 redeem。
 
-## What This Service Does
+本服務不負責 market discovery，也不負責 market metadata。上游服務需要提供 `tokenId`、`conditionId`、`negRisk`、market resolved signal 等資訊。
 
-- Creates Polymarket CLOB market orders.
-- Cancels and queries private orders.
-- Connects to Polymarket authenticated user WebSocket.
-- Writes user stream events to NDJSON for later DB ingestion.
-- Periodically reads open orders and dynamically subscribes new markets to the existing user WebSocket.
-- Exposes a redeem endpoint that an external market-info service can trigger after resolution.
+## 服務範圍
 
-It does not:
+本服務負責：
 
-- Query or store market info.
-- Discover all Polymarket markets.
-- Decide whether a market is resolved.
-- Automatically redeem proxy/deposit-wallet positions without the correct wallet execution path.
+- 建立 Polymarket CLOB market order。
+- 取消與查詢 private orders。
+- 連接 Polymarket authenticated user WebSocket。
+- 將 user stream event 寫成 NDJSON，方便後續寫入 DB。
+- 定時讀取 open orders，並把新 market 動態加入既有 user WebSocket 訂閱。
+- 提供 `POST /redeem`，讓外部 market-info server 在市場 resolved 後觸發 redeem。
 
-## Architecture
+本服務不負責：
+
+- 查詢或儲存 market info。
+- 掃描所有 Polymarket markets。
+- 判斷市場是否已 resolved。
+- 自動處理 `POLY_PROXY` / Safe 的 redeem 執行路徑。
+
+## 架構
 
 ```text
 HTTP client / upstream service
@@ -28,31 +32,31 @@ Fastify routes
         |
         +-- OrderService -> @polymarket/clob-client-v2
         |
-        +-- RedeemService -> viem -> Polygon contracts
+        +-- RedeemService -> viem / Polymarket relayer -> Polygon contracts
         |
         +-- UserStream -> Polymarket user WebSocket -> logs/user-stream.ndjson
         |
         +-- WalletOpenOrdersSync -> getOpenOrders() -> dynamic WS subscribe
 ```
 
-Main files:
+主要檔案：
 
 ```text
-src/index.ts                         App bootstrap
-src/config/env.ts                    Env validation
-src/routes/orderRoutes.ts            Order HTTP routes
-src/routes/redeemRoutes.ts           Redeem HTTP route
-src/polymarket/clobClient.ts         CLOB client setup
-src/polymarket/orderService.ts       Trading operations
-src/polymarket/userStream.ts         User WebSocket + event log
-src/polymarket/walletOpenOrdersSync.ts Open-order polling and dynamic subscribe
-src/polymarket/redeemService.ts      Onchain redeem transaction
-src/types/order.ts                   Order request schemas
-src/types/redeem.ts                  Redeem request schema
-scripts/*.sh                         curl helpers
+src/index.ts                           App 啟動入口
+src/config/env.ts                      環境變數驗證
+src/routes/orderRoutes.ts              訂單 HTTP routes
+src/routes/redeemRoutes.ts             redeem HTTP route
+src/polymarket/clobClient.ts           CLOB client 初始化
+src/polymarket/orderService.ts         下單 / 取消 / 查詢
+src/polymarket/userStream.ts           User WebSocket + 事件檔案輸出
+src/polymarket/walletOpenOrdersSync.ts Open orders polling + 動態訂閱
+src/polymarket/redeemService.ts        redeem 執行邏輯
+src/types/order.ts                     訂單 request schemas
+src/types/redeem.ts                    redeem request schema
+scripts/*.sh                           curl 測試腳本
 ```
 
-## Setup
+## 啟動
 
 ```bash
 npm install
@@ -60,20 +64,20 @@ cp .env.example .env
 npm run dev
 ```
 
-Default URL:
+預設 API URL：
 
 ```text
 http://localhost:3000
 ```
 
-Production-style run:
+production-style 啟動：
 
 ```bash
 npm run build
 npm run start
 ```
 
-## Required Env
+## 必要環境變數
 
 ```env
 POLYMARKET_PRIVATE_KEY=0x...
@@ -83,18 +87,18 @@ POLYMARKET_DERIVE_API_KEY=true
 POLYGON_RPC_URL=https://polygon-rpc.com
 ```
 
-Signature types:
+Signature type 對應：
 
-| Value | Use case |
+| Value | 使用情境 |
 | --- | --- |
-| `EOA` / `0` | Direct EOA trading |
+| `EOA` / `0` | 直接用 EOA 交易 |
 | `POLY_PROXY` / `1` | Polymarket proxy wallet |
 | `POLY_GNOSIS_SAFE` / `2` | Safe wallet |
 | `POLY_1271` / `3` | Polymarket deposit wallet |
 
-For `POLY_PROXY`, `POLY_GNOSIS_SAFE`, or `POLY_1271`, `POLYMARKET_FUNDER_ADDRESS` must be the wallet that actually holds funds and positions.
+如果使用 `POLY_PROXY`、`POLY_GNOSIS_SAFE` 或 `POLY_1271`，`POLYMARKET_FUNDER_ADDRESS` 必須填真正持有資金與部位的 wallet address。
 
-## Endpoints
+## API Endpoints
 
 ```text
 GET    /health
@@ -107,9 +111,9 @@ GET    /orders/:orderId
 POST   /redeem
 ```
 
-## Trading Flow
+## 下單流程
 
-Market order request:
+Market order 請求：
 
 ```json
 {
@@ -120,37 +124,37 @@ Market order request:
 }
 ```
 
-Flow:
+流程：
 
 ```text
 POST /orders/market
--> zod validates request
--> OrderService maps side/orderType to SDK enums
--> SDK resolves market price / tick size / negRisk by tokenId
--> wallet signs order
--> CLOB API posts order using API credentials
--> response returns success/orderId/raw
+-> zod 驗證 request body
+-> OrderService 將 side / orderType 轉成 SDK enum
+-> SDK 根據 tokenId 解析 market price / tick size / negRisk
+-> wallet 簽 order
+-> 使用 CLOB API credentials 送出 order
+-> 回傳 success / orderId / raw
 ```
 
-Market order semantics:
+Market order 語意：
 
-- `BUY amount` is USDC amount to spend.
-- `SELL amount` is outcome token shares to sell.
-- `tokenId` is the CLOB outcome token id, not slug or conditionId.
-- `orderType` is `FOK` or `FAK`.
+- `BUY amount` 代表要花費的 USDC 數量。
+- `SELL amount` 代表要賣出的 outcome token shares 數量。
+- `tokenId` 是 CLOB outcome token id，不是 slug，也不是 conditionId。
+- `orderType` 只能是 `FOK` 或 `FAK`。
 
 ## Auth Model
 
-- API key creation or derivation uses wallet signing.
-- Order creation uses wallet signing.
-- Posting orders, cancelling orders, and private order queries use CLOB API credentials.
-- `GET /health` does not require Polymarket auth.
+- 建立或 derive API credentials 需要 wallet signing。
+- 建立 order 需要 wallet signing。
+- post order、cancel order、private order query 使用 CLOB API credentials。
+- `GET /health` 不需要 Polymarket auth。
 
-If `POLYMARKET_API_KEY`, `POLYMARKET_API_SECRET`, and `POLYMARKET_API_PASSPHRASE` are empty and `POLYMARKET_DERIVE_API_KEY=true`, the server derives credentials on startup.
+如果 `POLYMARKET_API_KEY`、`POLYMARKET_API_SECRET`、`POLYMARKET_API_PASSPHRASE` 都是空，且 `POLYMARKET_DERIVE_API_KEY=true`，server 會在啟動時自動 derive credentials。
 
-## User Stream Flow
+## User Stream 流程
 
-Enable:
+啟用：
 
 ```env
 POLYMARKET_USER_STREAM_ENABLED=true
@@ -158,18 +162,18 @@ POLYMARKET_USER_STREAM_LOG_FILE=logs/user-stream.ndjson
 POLYMARKET_USER_STREAM_MARKETS=
 ```
 
-Flow:
+流程：
 
 ```text
-server starts
--> UserStream connects to wss://ws-subscriptions-clob.polymarket.com/ws/user
--> sends authenticated subscription payload
--> receives user order/trade events
--> normalizes common fields
--> writes each event to logs/user-stream.ndjson
+server 啟動
+-> UserStream 連接 wss://ws-subscriptions-clob.polymarket.com/ws/user
+-> 送出 authenticated subscription payload
+-> 接收使用者 order / trade events
+-> normalize 常用欄位
+-> 每筆 event 寫入 logs/user-stream.ndjson
 ```
 
-Log format is NDJSON, one JSON object per line:
+Log 格式是 NDJSON，一行一筆 JSON：
 
 ```json
 {
@@ -185,46 +189,46 @@ Log format is NDJSON, one JSON object per line:
 }
 ```
 
-`raw` keeps the complete original Polymarket event and can be stored as JSONB.
+`raw` 會保留 Polymarket 原始完整事件，之後可以直接存成 JSONB。
 
-Watch logs:
+查看 log：
 
 ```bash
 tail -f logs/user-stream.ndjson
 ```
 
-## Open Orders Sync
+## Open Orders 同步
 
-Enable:
+啟用：
 
 ```env
 POLYMARKET_OPEN_ORDERS_SYNC_ENABLED=true
 POLYMARKET_OPEN_ORDERS_SYNC_INTERVAL_MS=15000
 ```
 
-Purpose:
+用途：
 
 ```text
-UI or another bot places an order
--> server may not know that conditionId yet
--> WalletOpenOrdersSync calls getOpenOrders()
--> extracts openOrder.market
--> calls userStream.subscribeMarkets()
--> existing WebSocket sends operation=subscribe
--> no reconnect required
+你在 UI 或其他 bot 下單
+-> server 一開始可能不知道該 market 的 conditionId
+-> WalletOpenOrdersSync 定時呼叫 getOpenOrders()
+-> 從 openOrder.market 取出 conditionId
+-> 呼叫 userStream.subscribeMarkets()
+-> 既有 WebSocket 送 operation=subscribe
+-> 不需要斷線重連
 ```
 
-This only discovers markets that currently have open orders. It does not subscribe to all markets and does not query market info.
+這只會發現目前有 open orders 的 markets，不會訂閱所有 markets，也不會查 market info。
 
-## Redeem Flow
+## Redeem 流程
 
-Enable:
+啟用：
 
 ```env
 POLYMARKET_REDEEM_ENABLED=true
 ```
 
-Your market-info server should call this only after it confirms the market is resolved:
+你的 market-info server 應該先確認市場已 resolved，再呼叫本服務：
 
 ```json
 {
@@ -235,18 +239,18 @@ Your market-info server should call this only after it confirms the market is re
 }
 ```
 
-Flow:
+流程：
 
 ```text
-external market-info server confirms resolved market
+外部 market-info server 確認 market resolved
 -> POST /redeem
--> RedeemService selects standard or neg-risk adapter
--> if EOA: viem sends redeemPositions(...) directly from EOA
--> if POLY_1271: relayer executes a deposit-wallet WALLET batch from POLYMARKET_FUNDER_ADDRESS
--> returns txHash or relayer transaction info
+-> RedeemService 根據 negRisk 選標準 adapter 或 neg-risk adapter
+-> 如果是 EOA：用 viem 從 EOA 直接送 redeemPositions(...)
+-> 如果是 POLY_1271：透過 relayer 從 POLYMARKET_FUNDER_ADDRESS deposit wallet 執行 WALLET batch
+-> 回傳 txHash 或 relayer transaction info
 ```
 
-POLY_1271 setup:
+`POLY_1271` 設定：
 
 ```env
 POLYMARKET_SIGNATURE_TYPE=POLY_1271
@@ -255,13 +259,13 @@ POLYMARKET_RELAYER_URL=https://relayer-v2.polymarket.com
 POLYMARKET_REDEEM_RELAYER_DEADLINE_SECONDS=240
 ```
 
-For `POLY_1271`, the owner EOA signs the relayer `DepositWallet` batch, but the onchain call executes from the deposit wallet that holds the outcome tokens. `POLY_PROXY` and Safe redeem execution are not implemented in this service yet.
+`POLY_1271` 情境下，owner EOA 負責簽 relayer 的 `DepositWallet` batch，但實際 onchain call 會從持有 outcome tokens 的 deposit wallet 執行。`POLY_PROXY` 和 Safe 的 redeem 執行路徑目前尚未實作。
 
 ## negRisk
 
-Do not hardcode `negRisk` globally for trading.
+交易時不要對所有市場硬寫全域 `negRisk`。
 
-The SDK should resolve `negRisk` by `tokenId`. If `negRisk` is wrong, the order may be signed against the wrong exchange contract and CLOB can return:
+SDK 應該根據 `tokenId` 自行解析 `negRisk`。如果 `negRisk` 錯了，order 可能會對錯的 exchange contract 簽名，CLOB 可能回：
 
 ```json
 {
@@ -269,17 +273,23 @@ The SDK should resolve `negRisk` by `tokenId`. If `negRisk` is wrong, the order 
 }
 ```
 
-For redeem, `negRisk` must come from your market metadata server because this service does not query market info.
+redeem 時的 `negRisk` 必須由你的 market metadata server 提供，因為本服務不查 market info。
 
 ## Scripts
 
-All scripts use `BASE_URL=http://localhost:3000` by default.
+所有 scripts 預設使用：
+
+```text
+BASE_URL=http://localhost:3000
+```
+
+健康檢查：
 
 ```bash
 ./scripts/health.sh
 ```
 
-Create market order:
+建立 market order：
 
 ```bash
 TOKEN_ID=OUTCOME_TOKEN_ID \
@@ -289,7 +299,7 @@ ORDER_TYPE=FOK \
 ./scripts/create_market_order.sh
 ```
 
-Query orders:
+查詢訂單：
 
 ```bash
 ./scripts/get_open_orders.sh
@@ -297,7 +307,7 @@ ASSET_ID=OUTCOME_TOKEN_ID ./scripts/get_open_orders.sh
 ORDER_ID=ORDER_ID ./scripts/get_order.sh
 ```
 
-Cancel orders:
+取消訂單：
 
 ```bash
 ORDER_ID=ORDER_ID ./scripts/cancel_order.sh
@@ -305,7 +315,7 @@ ORDER_IDS_JSON='["ORDER_ID_1","ORDER_ID_2"]' ./scripts/cancel_orders.sh
 ./scripts/cancel_all_orders.sh
 ```
 
-Redeem:
+redeem：
 
 ```bash
 CONDITION_ID=0xCONDITION_ID \
@@ -313,7 +323,7 @@ NEG_RISK=false \
 ./scripts/redeem.sh
 ```
 
-Use another port:
+指定其他 port：
 
 ```bash
 BASE_URL=http://localhost:3001 ./scripts/health.sh
@@ -321,7 +331,7 @@ BASE_URL=http://localhost:3001 ./scripts/health.sh
 
 ## Error Shapes
 
-Order errors:
+Order error：
 
 ```json
 {
@@ -332,7 +342,7 @@ Order errors:
 }
 ```
 
-Redeem errors:
+Redeem error：
 
 ```json
 {
@@ -343,11 +353,11 @@ Redeem errors:
 }
 ```
 
-## Engineer Notes
+## 工程注意事項
 
-- Keep market metadata ownership outside this service.
-- Use `conditionId` for user stream market subscriptions.
-- Use `tokenId` / `asset_id` for CLOB order placement.
-- Store `logs/user-stream.ndjson` records idempotently using `orderId` / `tradeId` where available.
-- For WebSocket replay gaps, reconcile with `GET /orders/open` and CLOB trade history from a separate sync job if needed.
-- Be careful with private keys in `.env`; never commit `.env`.
+- Market metadata ownership 在外部服務，不在本服務。
+- User stream market subscription 使用 `conditionId`。
+- CLOB 下單使用 `tokenId` / `asset_id`。
+- `logs/user-stream.ndjson` 寫 DB 時建議用 `orderId` / `tradeId` 做 idempotent upsert。
+- 如果 WebSocket 有漏事件，應由獨立 sync job 用 CLOB trade history / open orders 做 reconcile。
+- `.env` 裡有 private key，絕對不要 commit。
