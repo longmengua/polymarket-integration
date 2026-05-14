@@ -3,7 +3,10 @@ import Fastify from "fastify";
 import { env } from "./config/env.js";
 import { createPolymarketClient } from "./polymarket/clobClient.js";
 import { OrderService } from "./polymarket/orderService.js";
+import { RedeemService } from "./polymarket/redeemService.js";
 import { PolymarketUserStream } from "./polymarket/userStream.js";
+import { WalletOpenOrdersSync } from "./polymarket/walletOpenOrdersSync.js";
+import { registerRedeemRoutes } from "./routes/redeemRoutes.js";
 import { registerOrderRoutes } from "./routes/orderRoutes.js";
 import { logger } from "./utils/logger.js";
 
@@ -23,6 +26,7 @@ async function main() {
 
   // service layer 封裝所有 CLOB order 操作，routes 不直接碰 SDK。
   const orderService = new OrderService(polymarket.client);
+  const redeemService = new RedeemService();
 
   // 使用同一個 pino logger，讓 HTTP request log 與 app log 格式一致。
   const app = Fastify({ loggerInstance: logger });
@@ -42,13 +46,20 @@ async function main() {
 
   // 註冊所有 order HTTP routes。
   await registerOrderRoutes(app, orderService);
+  await registerRedeemRoutes(app, redeemService);
 
   let userStream: PolymarketUserStream | undefined;
+  let openOrdersSync: WalletOpenOrdersSync | undefined;
 
   // user stream 是背景監聽，不影響 HTTP API route 註冊。
   if (env.POLYMARKET_USER_STREAM_ENABLED) {
     userStream = new PolymarketUserStream(polymarket.creds, env.POLYMARKET_USER_STREAM_MARKETS);
     userStream.start();
+
+    if (env.POLYMARKET_OPEN_ORDERS_SYNC_ENABLED) {
+      openOrdersSync = new WalletOpenOrdersSync(polymarket.client, userStream);
+      openOrdersSync.start();
+    }
   }
 
   /**
@@ -58,6 +69,7 @@ async function main() {
    */
   const shutdown = async (signal: NodeJS.Signals) => {
     logger.info({ signal }, "Shutting down");
+    openOrdersSync?.stop();
     userStream?.stop();
     await app.close();
     process.exit(0);

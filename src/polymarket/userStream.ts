@@ -1,4 +1,7 @@
 import EventEmitter from "node:events";
+import { createWriteStream, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
+import type { WriteStream } from "node:fs";
 import WebSocket from "ws";
 import type { ApiKeyCreds } from "@polymarket/clob-client-v2";
 import { env } from "../config/env.js";
@@ -10,6 +13,22 @@ export type UserStreamEventName =
   | "order.filled"
   | "order.cancelled"
   | "order.updated";
+
+export interface UserStreamLogRecord {
+  ts: string;
+  eventName: string;
+  type?: string;
+  status?: string;
+  orderId?: string;
+  tradeId?: string;
+  market?: string;
+  assetId?: string;
+  owner?: string;
+  side?: string;
+  price?: string;
+  size?: string;
+  raw: unknown;
+}
 
 /**
  * Polymarket authenticated user WebSocket stream。
@@ -25,14 +44,28 @@ export class PolymarketUserStream extends EventEmitter {
   private reconnectAttempts = 0;
   private heartbeat?: NodeJS.Timeout;
   private stopped = false;
+  private readonly eventLogStream?: WriteStream;
+  private readonly subscribedMarkets: Set<string>;
 
   constructor(
     // CLOB L2 API credentials，用於 user channel auth payload。
     private readonly creds: ApiKeyCreds,
     // user channel 通常以 market conditionId list 作為訂閱 filter。
-    private readonly markets: string[]
+    markets: string[]
   ) {
     super();
+    this.subscribedMarkets = new Set(markets);
+
+    if (env.POLYMARKET_USER_STREAM_LOG_FILE) {
+      mkdirSync(dirname(env.POLYMARKET_USER_STREAM_LOG_FILE), { recursive: true });
+      this.eventLogStream = createWriteStream(env.POLYMARKET_USER_STREAM_LOG_FILE, {
+        flags: "a"
+      });
+    }
+  }
+
+  getMarkets(): string[] {
+    return [...this.subscribedMarkets];
   }
 
   /**
@@ -52,6 +85,7 @@ export class PolymarketUserStream extends EventEmitter {
     this.stopped = true;
     this.clearHeartbeat();
     this.ws?.close();
+    this.eventLogStream?.end();
   }
 
   /**
@@ -62,7 +96,13 @@ export class PolymarketUserStream extends EventEmitter {
       return;
     }
 
-    logger.info({ url: env.POLYMARKET_WS_USER_URL, markets: this.markets }, "Connecting user stream");
+    const raw = {
+      url: env.POLYMARKET_WS_USER_URL,
+      markets: this.getMarkets()
+    };
+
+    logger.info(raw, "Connecting user stream");
+    this.writeEventLog("connection.connecting", raw);
     this.ws = new WebSocket(env.POLYMARKET_WS_USER_URL);
 
     this.ws.on("open", () => {
@@ -71,16 +111,26 @@ export class PolymarketUserStream extends EventEmitter {
       this.subscribe();
       this.startHeartbeat();
       logger.info("Polymarket user stream connected");
+      this.writeEventLog("connection.open", {
+        markets: this.getMarkets()
+      });
     });
 
     this.ws.on("message", (data) => this.handleMessage(data.toString()));
     this.ws.on("pong", () => logger.debug("Polymarket user stream pong"));
     this.ws.on("error", (error) => {
       logger.error({ err: error }, "Polymarket user stream error");
+      this.writeEventLog("connection.error", {
+        message: error.message
+      });
     });
     this.ws.on("close", (code, reason) => {
       this.clearHeartbeat();
       logger.warn({ code, reason: reason.toString() }, "Polymarket user stream closed");
+      this.writeEventLog("connection.close", {
+        code,
+        reason: reason.toString()
+      });
       this.scheduleReconnect();
     });
   }
@@ -91,17 +141,67 @@ export class PolymarketUserStream extends EventEmitter {
    * auth 欄位來自 ClobClient createApiKey / deriveApiKey 的 credentials。
    */
   private subscribe() {
+    const markets = this.getMarkets();
     const payload = {
       auth: {
         apiKey: this.creds.key,
         secret: this.creds.secret,
         passphrase: this.creds.passphrase
       },
-      markets: this.markets,
+      markets,
       type: "user"
     };
 
     this.ws?.send(JSON.stringify(payload));
+    this.writeEventLog("subscription.sent", {
+      markets,
+      type: "user"
+    });
+  }
+
+  /**
+   * 動態加入新的 user channel market subscriptions。
+   *
+   * 不會重連 WebSocket：
+   * - WS 已連線：直接送 operation=subscribe payload。
+   * - WS 未連線：先加入 set，下次 reconnect 初始 subscribe 會帶上全部 markets。
+   */
+  subscribeMarkets(markets: string[]) {
+    const nextMarkets = markets
+      .map((market) => market.trim())
+      .filter(Boolean)
+      .filter((market) => !this.subscribedMarkets.has(market));
+
+    if (nextMarkets.length === 0) {
+      return [];
+    }
+
+    for (const market of nextMarkets) {
+      this.subscribedMarkets.add(market);
+    }
+
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      const payload = {
+        type: "user",
+        operation: "subscribe",
+        markets: nextMarkets
+      };
+
+      this.ws.send(JSON.stringify(payload));
+      this.writeEventLog("subscription.dynamic", {
+        markets: nextMarkets,
+        operation: "subscribe",
+        type: "user"
+      });
+    } else {
+      this.writeEventLog("subscription.queued", {
+        markets: nextMarkets,
+        reason: "websocket_not_open"
+      });
+    }
+
+    logger.info({ markets: nextMarkets }, "Added user stream market subscriptions");
+    return nextMarkets;
   }
 
   /**
@@ -162,6 +262,7 @@ export class PolymarketUserStream extends EventEmitter {
       event = JSON.parse(raw);
     } catch {
       logger.warn({ raw }, "Received non-JSON Polymarket user stream message");
+      this.writeEventLog("message.non_json", { raw });
       return;
     }
 
@@ -197,6 +298,61 @@ export class PolymarketUserStream extends EventEmitter {
 
     // structured log 保留原始 event，方便之後做審計或排查。
     logger.info({ eventName, event }, "Polymarket user stream event");
+    this.writeEventLog(eventName, event);
     this.emit(eventName, event);
+  }
+
+  private optionalString(value: unknown): string | undefined {
+    if (value === undefined || value === null || value === "") {
+      return undefined;
+    }
+
+    return String(value);
+  }
+
+  /**
+   * 從 Polymarket 原始事件提取常用 DB 欄位。
+   *
+   * raw 仍會完整保留，所以即使 Polymarket 日後新增欄位，
+   * 你也可以先落 raw JSON，再慢慢補 migration / parser。
+   */
+  private buildLogRecord(eventName: string, raw: unknown): UserStreamLogRecord {
+    const record = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+
+    return {
+      ts: new Date().toISOString(),
+      eventName,
+      type: this.optionalString(record.type ?? record.event_type),
+      status: this.optionalString(record.status ?? record.order_status ?? record.trade_status),
+      orderId: this.optionalString(record.order_id ?? record.orderID ?? record.orderId ?? record.id),
+      tradeId: this.optionalString(record.trade_id ?? record.tradeID ?? record.tradeId),
+      market: this.optionalString(record.market ?? record.condition_id ?? record.conditionId),
+      assetId: this.optionalString(record.asset_id ?? record.assetId ?? record.token_id ?? record.tokenID),
+      owner: this.optionalString(record.owner ?? record.maker_address ?? record.makerAddress),
+      side: this.optionalString(record.side ?? record.trader_side ?? record.traderSide),
+      price: this.optionalString(record.price),
+      size: this.optionalString(record.size ?? record.original_size ?? record.matched_amount),
+      raw
+    };
+  }
+
+  /**
+   * 將 user stream log 額外寫入檔案。
+   *
+   * 格式是 NDJSON：
+   * 每一行都是獨立 JSON，方便用 tail、jq、log shipper 解析。
+   *
+   * 寫入內容包含：
+   * - normalized columns：eventName / type / status / orderId / tradeId / market / assetId ...
+   * - raw：Polymarket 原始事件完整內容，可直接存成 JSONB。
+   */
+  private writeEventLog(eventName: string, raw: unknown) {
+    if (!this.eventLogStream) {
+      return;
+    }
+
+    const line = JSON.stringify(this.buildLogRecord(eventName, raw));
+
+    this.eventLogStream.write(`${line}\n`);
   }
 }

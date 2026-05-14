@@ -220,6 +220,41 @@ const envSchema = z.object({
 
   /**
    * =====================================================
+   * Redeem
+   * =====================================================
+   */
+  POLYMARKET_REDEEM_ENABLED: z
+    .string()
+    .default("false")
+    .transform(parseBoolean),
+
+  POLYMARKET_PUSD_COLLATERAL_TOKEN: ethAddressSchema.default("0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"),
+
+  POLYMARKET_CTF_COLLATERAL_ADAPTER: ethAddressSchema.default("0xAdA100Db00Ca00073811820692005400218FcE1f"),
+
+  POLYMARKET_NEG_RISK_CTF_COLLATERAL_ADAPTER: ethAddressSchema.default("0xadA2005600Dec949baf300f4C6120000bDB6eAab"),
+
+  POLYMARKET_RELAYER_URL: z.string().url().default("https://relayer-v2.polymarket.com"),
+
+  POLYMARKET_REDEEM_RELAYER_DEADLINE_SECONDS: z.coerce.number().int().positive().default(240),
+
+  POLYMARKET_BUILDER_API_KEY: z
+    .string()
+    .optional()
+    .transform((value) => value?.trim() || undefined),
+
+  POLYMARKET_BUILDER_API_SECRET: z
+    .string()
+    .optional()
+    .transform((value) => value?.trim() || undefined),
+
+  POLYMARKET_BUILDER_API_PASSPHRASE: z
+    .string()
+    .optional()
+    .transform((value) => value?.trim() || undefined),
+
+  /**
+   * =====================================================
    * User Stream
    * =====================================================
    */
@@ -227,6 +262,34 @@ const envSchema = z.object({
     .string()
     .default("true")
     .transform(parseBoolean),
+
+  /**
+   * User stream event log file.
+   *
+   * 一行一筆 JSON，方便 tail -f 或後續 ETL。
+   */
+  POLYMARKET_USER_STREAM_LOG_FILE: z
+    .string()
+    .default("logs/user-stream.ndjson")
+    .transform((value) => value.trim()),
+
+  /**
+   * 是否定時讀取 open orders，並把新 market 動態加入 user stream。
+   */
+  POLYMARKET_OPEN_ORDERS_SYNC_ENABLED: z
+    .string()
+    .default("true")
+    .transform(parseBoolean),
+
+  /**
+   * open orders 同步間隔，單位毫秒。
+   */
+  POLYMARKET_OPEN_ORDERS_SYNC_INTERVAL_MS: z
+    .coerce
+    .number()
+    .int()
+    .positive()
+    .default(15_000),
 
   /**
    * conditionId list
