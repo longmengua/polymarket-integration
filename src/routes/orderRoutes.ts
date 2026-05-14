@@ -4,7 +4,6 @@ import { OrderService, toApiError } from "../polymarket/orderService.js";
 import {
   cancelOrdersSchema,
   createMarketOrderSchema,
-  createOrderSchema,
   openOrdersQuerySchema
 } from "../types/order.js";
 
@@ -31,20 +30,6 @@ export async function registerOrderRoutes(app: FastifyInstance<any, any, any, an
       // request validation error 回 400；Polymarket API / SDK 錯誤統一轉成 502。
       const statusCode = error instanceof z.ZodError ? 400 : 502;
       return reply.code(statusCode).send(toApiError(error));
-    }
-  });
-
-  /**
-   * 取消單筆訂單 endpoint，接受 orderId path param。
-   *
-   * orderId 是 Polymarket CLOB order hash / order id。
-   */
-  app.delete("/orders/:orderId", async (request, reply) => {
-    try {
-      const params = parseWith(z.object({ orderId: z.string().min(1) }), request.params);
-      return await orderService.cancelOrder(params.orderId);
-    } catch (error) {
-      return reply.code(error instanceof z.ZodError ? 400 : 502).send(toApiError(error));
     }
   });
 
@@ -76,20 +61,6 @@ export async function registerOrderRoutes(app: FastifyInstance<any, any, any, an
   });
 
   /**
-   * 查詢單一 order endpoint，回傳 order details。
-   *
-   * 主要用於下單後以 orderId 輪詢狀態，或人工排查單筆訂單。
-   */
-  app.get("/orders/:orderId", async (request, reply) => {
-    try {
-      const params = parseWith(z.object({ orderId: z.string().min(1) }), request.params);
-      return await orderService.getOrder(params.orderId);
-    } catch (error) {
-      return reply.code(error instanceof z.ZodError ? 400 : 502).send(toApiError(error));
-    }
-  });
-
-  /**
    * 查詢 open orders endpoint，支援 filter by market 或 asset_id。
    *
    * market 通常是 conditionId；asset_id 是 outcome tokenId。
@@ -99,6 +70,34 @@ export async function registerOrderRoutes(app: FastifyInstance<any, any, any, an
     try {
       const query = parseWith(openOrdersQuerySchema, request.query);
       return await orderService.getOpenOrders(query);
+    } catch (error) {
+      return reply.code(error instanceof z.ZodError ? 400 : 502).send(toApiError(error));
+    }
+  });
+
+  /**
+   * 取消單筆訂單 endpoint，接受 orderId path param。
+   *
+   * orderId 是 Polymarket CLOB order hash / order id。
+   */
+  app.delete("/orders/:orderId", async (request, reply) => {
+    try {
+      const params = parseWith(z.object({ orderId: z.string().min(1) }), request.params);
+      return await orderService.cancelOrder(params.orderId);
+    } catch (error) {
+      return reply.code(error instanceof z.ZodError ? 400 : 502).send(toApiError(error));
+    }
+  });
+
+  /**
+   * 查詢單一 order endpoint，回傳 order details。
+   *
+   * 主要用於下單後以 orderId 輪詢狀態，或人工排查單筆訂單。
+   */
+  app.get("/orders/:orderId", async (request, reply) => {
+    try {
+      const params = parseWith(z.object({ orderId: z.string().min(1) }), request.params);
+      return await orderService.getOrder(params.orderId);
     } catch (error) {
       return reply.code(error instanceof z.ZodError ? 400 : 502).send(toApiError(error));
     }

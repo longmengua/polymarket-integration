@@ -149,9 +149,10 @@ export class OrderService {
           expiration: body.expiration
         },
         {
-          // tickSize / negRisk 原本應該來自 market metadata；此 server 由 env 提供預設值。
-          tickSize: env.POLYMARKET_DEFAULT_TICK_SIZE,
-          negRisk: env.POLYMARKET_DEFAULT_NEG_RISK
+          // tickSize 可由 env 提供；negRisk 不在這裡強制覆蓋，交給 SDK 依 tokenID 查詢。
+          // 如果 negRisk market 被錯誤傳成 false，order 會用錯 exchange contract 簽名，
+          // CLOB 端常見回應就是 invalid signature。
+          tickSize: env.POLYMARKET_DEFAULT_TICK_SIZE
         }
       );
 
@@ -173,6 +174,36 @@ export class OrderService {
    *
    * SDK 會依 tokenId / side / amount 計算 marketable order，
    * 最終仍透過 CLOB 下單流程送出。
+   *
+   * createAndPostMarketOrder 參數與 Gamma API market response 常用欄位對應：
+   *
+   * userMarketOrder.tokenID:
+   * - 來自 Gamma market.clobTokenIds。
+   * - clobTokenIds 通常是 JSON string array，需先 JSON.parse。
+   * - 它和 Gamma market.outcomes 是同順序陣列，例如 outcomes[0] 對 clobTokenIds[0]。
+   * - 這裡接收的是已由上游 DB 選好的 outcome tokenId，不直接接 conditionId / slug。
+   *
+   * userMarketOrder.side:
+   * - 不是 Gamma 欄位；由交易策略決定 BUY 或 SELL。
+   *
+   * userMarketOrder.amount:
+   * - 不是 Gamma 欄位；由交易策略決定。
+   * - BUY 時代表要花費的 USDC 數量。
+   * - SELL 時代表要賣出的 outcome token shares 數量。
+   *
+   * userMarketOrder.orderType:
+   * - 不是 Gamma 欄位；由交易策略決定 FOK 或 FAK。
+   *
+   * options.tickSize:
+   * - 建議來自 Gamma / CLOB market metadata。
+   * - Polymarket docs 會提到 market object 的 minimum_tick_size；
+   *   有些 Gamma response / 已整理 DB 會存成 tickSize。
+   * - 目前這個 server 不查 DB，所以暫時用 POLYMARKET_DEFAULT_TICK_SIZE。
+   *
+   * options.negRisk:
+   * - 來自 Gamma market.negRisk，或 CLOB market.neg_risk。
+   * - 不建議用全域預設值硬塞，因為不同 token 可能屬於不同 negRisk 設定。
+   * - 這裡不傳 negRisk，讓 SDK 自行依 tokenId 查 getNegRisk(tokenID)。
    */
   async createMarketOrder(body: CreateMarketOrderRequest) {
     try {
@@ -184,9 +215,9 @@ export class OrderService {
           orderType: sdkMarketOrderType(body.orderType)
         },
         {
-          // 市價單同樣需要 market tickSize / negRisk，這裡沿用 env 預設。
-          tickSize: env.POLYMARKET_DEFAULT_TICK_SIZE,
-          negRisk: env.POLYMARKET_DEFAULT_NEG_RISK
+          // 市價單同樣需要 market tickSize；negRisk 交給 SDK 自行查詢。
+          // 錯誤的 negRisk 會讓 SDK 選錯 verifying contract 簽名。
+          tickSize: env.POLYMARKET_DEFAULT_TICK_SIZE
         },
         sdkMarketOrderType(body.orderType)
       );

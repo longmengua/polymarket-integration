@@ -67,8 +67,12 @@ async function main() {
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
 
+  // 啟動前印出實際註冊的 route tree，方便確認目前 process 跑的是這份程式。
+  logger.info({ cwd: process.cwd(), routes: app.printRoutes() }, "Fastify routes registered");
+
   // 開始對外提供 HTTP API。
-  await app.listen({ host: env.HOST, port: env.PORT });
+  const address = await app.listen({ host: env.HOST, port: env.PORT });
+  logger.info({ address, cwd: process.cwd() }, "Server listening");
 }
 
 // 最外層 catch，避免啟動失敗時 silent exit。
