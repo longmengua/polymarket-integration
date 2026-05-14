@@ -1,15 +1,6 @@
 # Polymarket CLOB Trading Server
 
-Lightweight Node.js + TypeScript server for Polymarket CLOB trading. It exposes HTTP order APIs and connects to the authenticated Polymarket user WebSocket channel for order/trade lifecycle logs.
-
-## Stack
-
-- TypeScript
-- Fastify HTTP API
-- `@polymarket/clob-client-v2`
-- `viem` signer
-- `ws` user channel
-- `dotenv`, `zod`, `pino`
+TypeScript + Fastify server for Polymarket CLOB market orders, order queries, and cancellations.
 
 ## Setup
 
@@ -19,145 +10,123 @@ cp .env.example .env
 npm run dev
 ```
 
-The default API URL is `http://localhost:3000`.
+Default URL:
 
-## Environment
-
-Required:
-
-- `POLYMARKET_PRIVATE_KEY`: signer private key, `0x` prefixed.
-- `POLYMARKET_SIGNATURE_TYPE`: `EOA`, `POLY_PROXY`, `POLY_GNOSIS_SAFE`, `GNOSIS_SAFE`, `POLY_1271`, or numeric `0`-`3`.
-- `POLYMARKET_FUNDER_ADDRESS`: required for proxy/safe/deposit-wallet flows.
-
-API credentials:
-
-- Set `POLYMARKET_API_KEY`, `POLYMARKET_API_SECRET`, `POLYMARKET_API_PASSPHRASE`, or
-- Set `POLYMARKET_DERIVE_API_KEY=true` to call `createOrDeriveApiKey()` on boot.
-
-Signature type mapping:
-
-| Name | Value | Funder |
-| --- | ---: | --- |
-| `EOA` | `0` | signer EOA address |
-| `POLY_PROXY` | `1` | existing Polymarket proxy wallet address |
-| `POLY_GNOSIS_SAFE` / `GNOSIS_SAFE` | `2` | existing Safe wallet address |
-| `POLY_1271` | `3` | deposit wallet address |
-
-For new API users, Polymarket currently recommends deposit wallets with `POLY_1271`. In that case, the private key signs orders, but the funder is the deployed deposit wallet address. Existing proxy and Safe users should keep their current funder/proxy wallet address and matching signature type.
-
-## API
-
-### `POST /orders`
-
-```bash
-curl -X POST http://localhost:3000/orders \
-  -H 'content-type: application/json' \
-  -d '{
-    "tokenId": "OUTCOME_TOKEN_ID",
-    "side": "BUY",
-    "price": 0.53,
-    "size": 10,
-    "orderType": "GTC"
-  }'
+```text
+http://localhost:3000
 ```
 
-GTD example:
+## Required Env
 
-```bash
-curl -X POST http://localhost:3000/orders \
-  -H 'content-type: application/json' \
-  -d '{
-    "tokenId": "OUTCOME_TOKEN_ID",
-    "side": "SELL",
-    "price": 0.6,
-    "size": 5,
-    "orderType": "GTD",
-    "expiration": 1770000000
-  }'
+```env
+POLYMARKET_PRIVATE_KEY=0x...
+POLYMARKET_SIGNATURE_TYPE=POLY_1271
+POLYMARKET_FUNDER_ADDRESS=0x...
+POLYMARKET_DERIVE_API_KEY=true
 ```
 
-Success response:
+Signature type values:
+
+| Value | Use case |
+| --- | --- |
+| `EOA` / `0` | Direct EOA trading |
+| `POLY_PROXY` / `1` | Polymarket proxy wallet |
+| `POLY_GNOSIS_SAFE` / `2` | Safe wallet |
+| `POLY_1271` / `3` | Polymarket deposit wallet |
+
+If using `POLY_PROXY`, `POLY_GNOSIS_SAFE`, or `POLY_1271`, `POLYMARKET_FUNDER_ADDRESS` must be the proxy/safe/deposit wallet address.
+
+## Endpoints
+
+```text
+GET    /health
+POST   /orders/market
+POST   /orders/cancel
+DELETE /orders
+GET    /orders/open
+DELETE /orders/:orderId
+GET    /orders/:orderId
+```
+
+## Scripts
+
+All scripts use `BASE_URL=http://localhost:3000` by default.
+
+```bash
+./scripts/health.sh
+```
+
+Create market order:
+
+```bash
+TOKEN_ID=OUTCOME_TOKEN_ID \
+SIDE=BUY \
+AMOUNT=1 \
+ORDER_TYPE=FOK \
+./scripts/create_market_order.sh
+```
+
+Query orders:
+
+```bash
+./scripts/get_open_orders.sh
+ASSET_ID=OUTCOME_TOKEN_ID ./scripts/get_open_orders.sh
+ORDER_ID=ORDER_ID ./scripts/get_order.sh
+```
+
+Cancel orders:
+
+```bash
+ORDER_ID=ORDER_ID ./scripts/cancel_order.sh
+ORDER_IDS_JSON='["ORDER_ID_1","ORDER_ID_2"]' ./scripts/cancel_orders.sh
+./scripts/cancel_all_orders.sh
+```
+
+Use another port:
+
+```bash
+BASE_URL=http://localhost:3001 ./scripts/health.sh
+```
+
+## Market Order Body
+
+`POST /orders/market`
 
 ```json
 {
-  "success": true,
-  "orderId": "0x...",
-  "raw": {}
+  "tokenId": "OUTCOME_TOKEN_ID",
+  "side": "BUY",
+  "amount": 1,
+  "orderType": "FOK"
 }
 ```
 
-### `POST /orders/market`
+For market orders:
 
-```bash
-curl -X POST http://localhost:3000/orders/market \
-  -H 'content-type: application/json' \
-  -d '{
-    "tokenId": "OUTCOME_TOKEN_ID",
-    "side": "BUY",
-    "amount": 100,
-    "orderType": "FOK"
-  }'
+- `BUY amount` = USDC amount to spend
+- `SELL amount` = outcome token shares to sell
+- `tokenId` = CLOB outcome token id, not market slug or conditionId
+
+## Auth
+
+- Creating or deriving API credentials uses wallet signing.
+- Creating an order uses wallet signing.
+- Posting, cancelling, and querying private orders use CLOB API credentials.
+- `GET /health` does not require Polymarket auth.
+
+## negRisk
+
+Do not hardcode `negRisk` globally for all markets.
+
+The SDK should resolve `negRisk` by `tokenId`. If `negRisk` is wrong, the order may be signed against the wrong exchange contract and CLOB can return:
+
+```json
+{
+  "error": "invalid signature"
+}
 ```
-
-### `DELETE /orders/:orderId`
-
-```bash
-curl -X DELETE http://localhost:3000/orders/0xORDER_ID
-```
-
-### `POST /orders/cancel`
-
-```bash
-curl -X POST http://localhost:3000/orders/cancel \
-  -H 'content-type: application/json' \
-  -d '{"orderIds":["0xORDER_ID_1","0xORDER_ID_2"]}'
-```
-
-### `DELETE /orders`
-
-```bash
-curl -X DELETE http://localhost:3000/orders
-```
-
-### `GET /orders/:orderId`
-
-```bash
-curl http://localhost:3000/orders/0xORDER_ID
-```
-
-### `GET /orders/open`
-
-```bash
-curl 'http://localhost:3000/orders/open?market=0xCONDITION_ID&asset_id=OUTCOME_TOKEN_ID'
-```
-
-## WebSocket User Channel
-
-On boot, the server connects to:
-
-```text
-wss://ws-subscriptions-clob.polymarket.com/ws/user
-```
-
-It sends the SDK API credentials in the auth payload, subscribes with `POLYMARKET_USER_STREAM_MARKETS`, sends `PING` every 10 seconds, and reconnects with exponential backoff.
-
-The user channel filters by market condition IDs, not token IDs. Set:
-
-```bash
-POLYMARKET_USER_STREAM_MARKETS=0xcondition1,0xcondition2
-```
-
-Incoming events are logged as structured pino logs and emitted internally as:
-
-- `order.created`
-- `order.failed`
-- `order.filled`
-- `order.cancelled`
-- `order.updated`
 
 ## Error Shape
-
-Polymarket errors are normalized as:
 
 ```json
 {
@@ -167,9 +136,3 @@ Polymarket errors are normalized as:
   "details": {}
 }
 ```
-
-## Notes
-
-- This server does not query market metadata or any database.
-- `tokenId`, `conditionId`, `tickSize`, and `negRisk` should come from your upstream system. This sample exposes default `POLYMARKET_DEFAULT_TICK_SIZE` and `POLYMARKET_DEFAULT_NEG_RISK` env values.
-- Before trading, ensure the funder wallet has pUSD/outcome token balances and required exchange approvals.
