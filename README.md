@@ -241,13 +241,21 @@ Flow:
 external market-info server confirms resolved market
 -> POST /redeem
 -> RedeemService selects standard or neg-risk adapter
--> viem sends redeemPositions(collateralToken, zeroHash, conditionId, indexSets)
--> returns txHash and optional receipt
+-> if EOA: viem sends redeemPositions(...) directly from EOA
+-> if POLY_1271: relayer executes a deposit-wallet WALLET batch from POLYMARKET_FUNDER_ADDRESS
+-> returns txHash or relayer transaction info
 ```
 
-Important limitation:
+POLY_1271 setup:
 
-Direct redeem only works when the signer EOA holds the outcome tokens. If positions are held by `POLY_PROXY`, `POLY_1271`, or Safe funder wallets, redeem must be routed through that wallet or a relayer. The service intentionally guards against sending a direct EOA redeem in that case.
+```env
+POLYMARKET_SIGNATURE_TYPE=POLY_1271
+POLYMARKET_FUNDER_ADDRESS=0xDEPOSIT_WALLET
+POLYMARKET_RELAYER_URL=https://relayer-v2.polymarket.com
+POLYMARKET_REDEEM_RELAYER_DEADLINE_SECONDS=240
+```
+
+For `POLY_1271`, the owner EOA signs the relayer `DepositWallet` batch, but the onchain call executes from the deposit wallet that holds the outcome tokens. `POLY_PROXY` and Safe redeem execution are not implemented in this service yet.
 
 ## negRisk
 
